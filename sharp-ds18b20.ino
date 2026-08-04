@@ -6,6 +6,7 @@
  =====================================================================================
 
 Automat go gita
+Ma sobie latać w oknie termianala w katalogu skryptu
 
 inotifywait -m -e close_write,modify,moved_to . | while read -r path action file; do
     if [[ "$file" == *.ino ]]; then

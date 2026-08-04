@@ -23,6 +23,8 @@ const char* channelNames[8] = {
     "TUNR"    // CH 8
 };
 
+//test gita
+
 const int EEPROM_ADDR_CHANNEL = 0;
 
 // --- MODUŁ HW-154 (NOWA ROZPISKA) ---

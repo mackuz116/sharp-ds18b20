@@ -4,6 +4,23 @@
  =====================================================================================
  Hardware: Arduino Pro Mini (5V / 16MHz) + Moduł HW-154 (TM1638)
  =====================================================================================
+
+Automat go gita
+
+inotifywait -m -e close_write,modify,moved_to . | while read -r path action file; do
+    if [[ "$file" == *.ino ]]; then
+        git add .
+        if git commit -m "Auto-save: $file $(date '+%Y-%m-%d %H:%M:%S')"; then
+            git push
+            echo "✔ [GIT] Zapisano i wysłano (push) dla: $file"
+        fi
+    fi
+done
+
+
+
+
+
 */
 
 #include <OneWire.h>

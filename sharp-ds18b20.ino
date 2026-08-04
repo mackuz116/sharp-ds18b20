@@ -23,7 +23,10 @@ const char* channelNames[8] = {
     "TUNR"    // CH 8
 };
 
-//test gita
+// test gita automat
+//dqqwq
+///qdwdw
+///dqdwdqwd
 
 const int EEPROM_ADDR_CHANNEL = 0;
 

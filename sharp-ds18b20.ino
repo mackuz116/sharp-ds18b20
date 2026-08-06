@@ -1,6 +1,6 @@
 /*
  =====================================================================================
-           STEROWNIK WZMACNIACZA A-136 (SINGLE FAN + SELECTOR + HW-154 + IR + POWER)
+           STEROWNIK WZMACNIACZA A-136 (RAD FAN + TRAFO PROTECT + SELECTOR + IR)
  =====================================================================================
  Hardware: Arduino Pro Mini (5V / 16MHz) + Moduł TM1638 (HW-154) + Odbiornik IR
  Zasilanie: Małe trafko Standby (Arduino działa non-stop)
@@ -17,7 +17,7 @@
  D5           | Odbiornik IR (DATA / OUT)       | Odbiornik IR (np. VS1838B)
  D6           | Moduł HW-154 - DIO              | Linia danych TM1638
  D7           | Selektor Przekaźników - CH2     | Wyjście cyfrowe Break-Before-Make
- D8           | Czujniki Temp. DS18B20 (1-Wire) | Magistrala OneWire (F1)
+ D8           | Czujniki Temp. DS18B20 (1-Wire) | Radiator (Czujnik 1) + Trafo (Czujnik 2)
  D9           | Wentylator 1 - Sterowanie PWM   | Wyjście PWM (Timer 1)
  D10          | PRZEKAŹNIK ZASILANIA GŁÓWNEGO   | High = ON (Wzmacniacz włączony)
  D11          | Moduł HW-154 - STB (Strobe)     | Linia wyboru układu TM1638
@@ -26,7 +26,7 @@
  A0           | Selektor Przekaźników - CH3     | Wyjście cyfrowe GPIO
  A1           | Selektor Przekaźników - CH4     | Wyjście cyfrowe GPIO
  A2           | Selektor Przekaźników - CH5     | Wyjście cyfrowe GPIO
- A3           | Sygnalizacja Alarmu - Went. 1   | Wyjście sygnału awarii wentylatora
+ A3           | Sygnalizacja Alarmu - Wentylator| Wyjście sygnału awarii wentylatora
  A4           | Selektor Przekaźników - CH6     | Wyjście cyfrowe GPIO
  A5           | Selektor Przekaźników - CH7     | Wyjście cyfrowe GPIO
  A6 / A7      | WOLNE                           | Dostępne tylko jako wejścia ADC
@@ -96,18 +96,24 @@ TM1638plus tm(STROBE_TM, CLOCK_TM, DIO_TM, false);
 // --- STEROWANIE ZASILANIEM GŁÓWNYM ---
 #define POWER_RELAY_PIN 10 // Pin sterujący przekaźnikiem zasilania 230V
 bool powerState = false;   // false = Standby (OFF), true = Praca (ON)
-bool waitButtonsRelease = false; // Flaga zatrzaskowa (zapobiega pętli włączania/wyłączania)
+bool waitButtonsRelease = false;
 
-// --- CZUJNIK TEMPERATURY I CHŁODZENIE (1 WENTYLATOR) ---
+// --- CZUJNIKI TEMPERATURY (DS18B20) ---
 #define ONE_WIRE_BUS 8
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 
-DeviceAddress fan1Sensor = { 0x28, 0xFF, 0x20, 0x64, 0x68, 0x14, 0x02, 0xC5 }; 
+// Adresy czujników na magistrali 1-Wire
+DeviceAddress radSensor   = { 0x28, 0xFF, 0x20, 0x64, 0x68, 0x14, 0x02, 0xC5 }; // Czujnik 1: Radiator
+DeviceAddress trafoSensor = { 0x28, 0x3A, 0xE0, 0xAC, 0x08, 0x00, 0x00, 0x78 }; // Czujnik 2: Trafo
 
-const float TEMP_START = 40.0; 
-const float TEMP_MAX   = 70.0; 
-const int PWM_MIN      = 45; 
+// Nastawy temperaturowe dla radiatora (Wentylator)
+const float RAD_TEMP_START = 40.0; 
+const float RAD_TEMP_MAX   = 70.0; 
+const int PWM_MIN          = 45; 
+
+// Nastawa krytyczna dla Trafa (Wyłączenie wzmacniacza)
+const float TRAFO_MAX_TEMP = 85.0; 
 
 const int FAN_PWM_PIN   = 9;  
 const int FAN_TACHO_PIN = 2;   
@@ -118,13 +124,16 @@ unsigned long lastTempCheck = 0;
 const unsigned long tempInterval = 1000;
 
 bool fanAlarmState = false;
+bool trafoOverheatState = false;
 
 void countTacho() { tachoCount++; }
 
 // --- SELEKTOR WEJŚĆ ---
 const int selectorPins[8] = {4, 7, A0, A1, A2, A4, A5, 13}; // CH1..CH8
 int currentChannel = 0;
-float currentTempToDisplay = 0.0;
+float currentRadTemp = 0.0;
+float currentTrafoTemp = 0.0;
+bool showTrafoTempOnDisplay = false;
 
 void updateDisplay() {
     if (!powerState) return; 
@@ -132,10 +141,18 @@ void updateDisplay() {
     char displayBuffer[9];
 
     if (fanAlarmState) {
-        snprintf(displayBuffer, sizeof(displayBuffer), "%-4sERR F1", channelNames[currentChannel]);
+        snprintf(displayBuffer, sizeof(displayBuffer), "%-4sERR FAN", channelNames[currentChannel]);
+    } else if (trafoOverheatState) {
+        snprintf(displayBuffer, sizeof(displayBuffer), "HOT TRF!");
     } else {
-        int displayTemp = (currentTempToDisplay > 0 && currentTempToDisplay < 125) ? (int)currentTempToDisplay : 0;
-        snprintf(displayBuffer, sizeof(displayBuffer), "%-4s%2d C", channelNames[currentChannel], displayTemp);
+        // Wyświetlanie na przemian temperatury Radiatora ("r") i Trafa ("t")
+        if (showTrafoTempOnDisplay) {
+            int displayTemp = (currentTrafoTemp > 0 && currentTrafoTemp < 125) ? (int)currentTrafoTemp : 0;
+            snprintf(displayBuffer, sizeof(displayBuffer), "%-4st%2dC", channelNames[currentChannel], displayTemp);
+        } else {
+            int displayTemp = (currentRadTemp > 0 && currentRadTemp < 125) ? (int)currentRadTemp : 0;
+            snprintf(displayBuffer, sizeof(displayBuffer), "%-4sr%2dC", channelNames[currentChannel], displayTemp);
+        }
     }
 
     tm.displayText(displayBuffer);
@@ -212,7 +229,7 @@ void setPower(bool turnOn) {
         fanAlarmState = false;
 
         tm.reset();
-        waitButtonsRelease = true; // Wymagaj puszczenia przycisku po wyłączeniu
+        waitButtonsRelease = true;
 
         Serial.println(">>> WZMACNIACZ WYŁĄCZONY [STANDBY]");
     }
@@ -278,7 +295,7 @@ void setup() {
     setPower(false);
 
     sensors.requestTemperatures();
-    Serial.println("Sterownik A-136 gotowy (Tryb Standby).");
+    Serial.println("Sterownik A-136 gotowy (Tryb Standby z ochroną Trafa).");
     Serial.println("-------------------------------------------------------");
 }
 
@@ -286,16 +303,14 @@ void loop() {
     // 1. OBSŁUGA PILOTA IR
     handleIR();
 
-    // 2. PRECYZYJNA OBSŁUGA PRZYCISKÓW HW-154
+    // 2. PRZYCISKI PANELU HW-154
     uint8_t buttons = tm.readButtons();
     static unsigned long s1PressStartTime = 0;
     static bool s1LongPressTriggered = false;
 
-    // Gdy przycisk zostanie puszczony – resetujemy stan oczekiwania
     if (buttons == 0) {
         waitButtonsRelease = false;
 
-        // Jeśli S1 był wciśnięty, ale puszczono go przed progiem 1.2s -> KRÓTKIE KLIKNIĘCIE (Wybór CH1)
         if (s1PressStartTime != 0 && !s1LongPressTriggered && powerState) {
             selectChannel(0);
         }
@@ -305,23 +320,20 @@ void loop() {
     }
 
     if (!powerState) {
-        // W STANIE STANDBY: dowolne naciśnięcie wybudza układ
         if (buttons != 0 && !waitButtonsRelease) {
             setPower(true);
             waitButtonsRelease = true;
         }
     } else {
-        // W STANIE PRACY (POWER ON):
-        if (buttons & 0x01) { // Przycisk S1 wciśnięty
+        if (buttons & 0x01) { 
             if (s1PressStartTime == 0) {
                 s1PressStartTime = millis();
             } else if (!s1LongPressTriggered && (millis() - s1PressStartTime >= 1200)) {
-                // Przytrzymano > 1.2 sekundy -> WYŁĄCZENIE (STANDBY)
                 s1LongPressTriggered = true;
                 setPower(false);
             }
         } 
-        else if (buttons != 0) { // Przyciski S2..S8 (działają od razu)
+        else if (buttons != 0) { 
             int pressedBit = -1;
             for (int i = 1; i < 8; i++) {
                 if (buttons & (1 << i)) {
@@ -332,21 +344,39 @@ void loop() {
 
             if (pressedBit != -1 && pressedBit != currentChannel) {
                 selectChannel(pressedBit);
-                delay(200); // Antydrabik
+                delay(200); 
             }
         }
     }
 
-    // 3. OBSŁUGA CHŁODZENIA I TEMPERATURY (Tylko w trybie ON)
+    // 3. OBSŁUGA KONTROLI TEMPERATURY I CHŁODZENIA (Tylko w trybie ON)
     if (powerState) {
         unsigned long currentMillis = millis();
 
         if (currentMillis - lastTempCheck >= tempInterval) {
             lastTempCheck = currentMillis;
 
-            float temp = sensors.getTempC(fan1Sensor);
+            float tRad   = sensors.getTempC(radSensor);
+            float tTrafo = sensors.getTempC(trafoSensor);
             sensors.requestTemperatures();
 
+            currentRadTemp   = tRad;
+            currentTrafoTemp = tTrafo;
+
+            // --- ZABEZPIECZENIE TRAFA ---
+            if (tTrafo >= TRAFO_MAX_TEMP && tTrafo < 125.0) {
+                Serial.print("[ALARM KRYTYCZNY] Przegrzanie Trafa: ");
+                Serial.print(tTrafo);
+                Serial.println("°C! Awaryjne wyłączenie zasilania.");
+
+                trafoOverheatState = true;
+                setPower(false); // Natychmiastowe odcięcie zasilania 230V!
+                return;
+            } else {
+                trafoOverheatState = false;
+            }
+
+            // --- STEROWANIE WENTYLATOREM RADIATORA ---
             int pwmValue = 0;
 
             noInterrupts();
@@ -354,14 +384,15 @@ void loop() {
             tachoCount = 0;
             interrupts();
 
-            if (temp < TEMP_START) {
+            if (tRad < RAD_TEMP_START) {
                 pwmValue = 0;
             } else {
-                float constrainedTemp = constrain(temp, TEMP_START, TEMP_MAX);
-                pwmValue = map(constrainedTemp, TEMP_START, TEMP_MAX, PWM_MIN, 255);
+                float constrainedTemp = constrain(tRad, RAD_TEMP_START, RAD_TEMP_MAX);
+                pwmValue = map(constrainedTemp, RAD_TEMP_START, RAD_TEMP_MAX, PWM_MIN, 255);
             }
             analogWrite(FAN_PWM_PIN, pwmValue);
 
+            // Weryfikacja uszkodzenia wentylatora
             if (pwmValue > 0 && rpm == 0) {
                 digitalWrite(FAN_ALARM_PIN, HIGH);
                 fanAlarmState = true;
@@ -370,14 +401,16 @@ void loop() {
                 fanAlarmState = false;
             }
 
+            // Raport diagnostyczny w Serial Monitorze
             Serial.print("[STAT] CH:"); Serial.print(currentChannel + 1);
             Serial.print(" ("); Serial.print(channelNames[currentChannel]); Serial.print(") | ");
-            Serial.print("F1: "); Serial.print(temp, 1); Serial.print("°C, ");
-            Serial.print("PWM: "); Serial.print(map(pwmValue, 0, 255, 0, 100)); Serial.print("%, ");
-            Serial.print("RPM: "); Serial.print(rpm); 
-            if (fanAlarmState) Serial.println(" [ALARM!]"); else Serial.println(" [OK]");
+            Serial.print("RAD: "); Serial.print(tRad, 1); Serial.print("°C (PWM:");
+            Serial.print(map(pwmValue, 0, 255, 0, 100)); Serial.print("%, RPM:");
+            Serial.print(rpm); Serial.print(") | ");
+            Serial.print("TRAFO: "); Serial.print(tTrafo, 1); Serial.println("°C");
 
-            currentTempToDisplay = temp;
+            // Przełączanie wskaźnika temp na wyświetlaczu (Radiator / Trafo)
+            showTrafoTempOnDisplay = !showTrafoTempOnDisplay;
             updateDisplay();
         }
     }

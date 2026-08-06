@@ -54,7 +54,7 @@
 // ===================================================================================
 //             ZWERYFIKOWANE KODY TWOJEGO PILOTA IR (PROTOKÓŁ NEC)
 // ===================================================================================
-const uint32_t IR_CODE_POWER = 0x45; // Przycisk Power na pilocie (ZMIEŃ NA SWÓJ KOD!)
+const uint32_t IR_CODE_POWER = 0x45; // Przycisk Power na pilocie
 
 const uint32_t IR_CODE_CH1   = 0x0C; // Przycisk 1 (CD)
 const uint32_t IR_CODE_CH2   = 0x18; // Przycisk 2 (DAC)
@@ -65,8 +65,8 @@ const uint32_t IR_CODE_CH6   = 0x5A; // Przycisk 6 (TAPE)
 const uint32_t IR_CODE_CH7   = 0x42; // Przycisk 7 (PHON)
 const uint32_t IR_CODE_CH8   = 0x52; // Przycisk 8 (TUNR)
 
-const uint32_t IR_CODE_NEXT = 0x15; // Przycisk opcjonalny (np. Ch+)
-const uint32_t IR_CODE_PREV = 0x7; // Przycisk opcjonalny (np. Ch-)
+const uint32_t IR_CODE_NEXT  = 0x15; // Przycisk Ch+ / Strzałka w prawo
+const uint32_t IR_CODE_PREV  = 0x07; // Przycisk Ch- / Strzałka w lewo
 // ===================================================================================
 
 // Nazwy wejść wyświetlane na panelu (max 4 znaki)
@@ -126,7 +126,7 @@ int currentChannel = 0;
 float currentTempToDisplay = 0.0;
 
 void updateDisplay() {
-    if (!powerState) return; // Brak odświeżania w trybie Standby
+    if (!powerState) return; 
 
     char displayBuffer[9];
 
@@ -140,56 +140,8 @@ void updateDisplay() {
     tm.displayText(displayBuffer);
 }
 
-void setPower(bool turnOn) {
-    powerState = turnOn;
-
-    if (powerState) {
-        // --- WŁĄCZANIE WZMACNIACZA (POWER ON) ---
-        digitalWrite(POWER_RELAY_PIN, HIGH); // Załączenie zasilania głównego
-        
-        tm.displayBegin();
-        tm.reset();
-        tm.brightness(3);
-
-        // Efekt powitalny
-        tm.displayText("A-136 OK");
-        for (int i = 0; i < 8; i++) {
-            tm.setLED(i, 1);
-            delay(50);
-            tm.setLED(i, 0);
-        }
-        delay(200);
-
-        // Przywrócenie zapamiętanego kanału
-        byte savedChannel = EEPROM.read(EEPROM_ADDR_CHANNEL);
-        if (savedChannel > 7) savedChannel = 0;
-        selectChannel(savedChannel);
-
-        Serial.println(">>> WZMACNIACZ WŁĄCZONY [POWER ON]");
-    } else {
-        // --- WYŁĄCZANIE WZMACNIACZA (STANDBY / OFF) ---
-        // 1. Rozłączenie przekaźników audio
-        for (int i = 0; i < 8; i++) {
-            digitalWrite(selectorPins[i], LOW);
-        }
-
-        // 2. Wyłączenie przekaźnika zasilania głównego
-        digitalWrite(POWER_RELAY_PIN, LOW);
-
-        // 3. Wyłączenie wentylatora i alarmu
-        analogWrite(FAN_PWM_PIN, 0);
-        digitalWrite(FAN_ALARM_PIN, LOW);
-        fanAlarmState = false;
-
-        // 4. Całkowite wygaszenie modułu HW-154 (LCD + LED)
-        tm.reset();
-
-        Serial.println(">>> WZMACNIACZ WYŁĄCZONY [STANDBY]");
-    }
-}
-
 void selectChannel(int channel) {
-    if (!powerState) return; // Ignoruj przełączanie w trybie Standby
+    if (!powerState) return; 
 
     if (channel < 0) channel = 7;
     if (channel > 7) channel = 0;
@@ -222,6 +174,48 @@ void selectChannel(int channel) {
     Serial.println("]");
 }
 
+void setPower(bool turnOn) {
+    powerState = turnOn;
+
+    if (powerState) {
+        // --- WŁĄCZANIE WZMACNIACZA (POWER ON) ---
+        digitalWrite(POWER_RELAY_PIN, HIGH); 
+        
+        tm.displayBegin();
+        tm.reset();
+        tm.brightness(3);
+
+        tm.displayText("A-136 OK");
+        for (int i = 0; i < 8; i++) {
+            tm.setLED(i, 1);
+            delay(50);
+            tm.setLED(i, 0);
+        }
+        delay(200);
+
+        byte savedChannel = EEPROM.read(EEPROM_ADDR_CHANNEL);
+        if (savedChannel > 7) savedChannel = 0;
+        selectChannel(savedChannel);
+
+        Serial.println(">>> WZMACNIACZ WŁĄCZONY [POWER ON]");
+    } else {
+        // --- WYŁĄCZANIE WZMACNIACZA (STANDBY / OFF) ---
+        for (int i = 0; i < 8; i++) {
+            digitalWrite(selectorPins[i], LOW);
+        }
+
+        digitalWrite(POWER_RELAY_PIN, LOW);
+
+        analogWrite(FAN_PWM_PIN, 0);
+        digitalWrite(FAN_ALARM_PIN, LOW);
+        fanAlarmState = false;
+
+        tm.reset();
+
+        Serial.println(">>> WZMACNIACZ WYŁĄCZONY [STANDBY]");
+    }
+}
+
 // --- OBSŁUGA PILOTA IR ---
 void handleIR() {
     if (IrReceiver.decode()) {
@@ -232,46 +226,21 @@ void handleIR() {
                 Serial.print("[IR DETECT] Komenda HEX: 0x");
                 Serial.print(irCommand, HEX);
 
-                // Przycisk Power działa zawsze (wybudza / uśpiewa)
                 if (irCommand == IR_CODE_POWER) {
                     Serial.println(" -> Akcja: [POWER TOGGLE]");
                     setPower(!powerState);
                 } 
-                // Pozostałe przyciski działają tylko, gdy wzmacniacz jest WŁĄCZONY
                 else if (powerState) {
-                    if (irCommand == IR_CODE_CH1) {
-                        Serial.println(" -> Akcja: [CH 1]");
-                        selectChannel(0);
-                    } else if (irCommand == IR_CODE_CH2) {
-                        Serial.println(" -> Akcja: [CH 2]");
-                        selectChannel(1);
-                    } else if (irCommand == IR_CODE_CH3) {
-                        Serial.println(" -> Akcja: [CH 3]");
-                        selectChannel(2);
-                    } else if (irCommand == IR_CODE_CH4) {
-                        Serial.println(" -> Akcja: [CH 4]");
-                        selectChannel(3);
-                    } else if (irCommand == IR_CODE_CH5) {
-                        Serial.println(" -> Akcja: [CH 5]");
-                        selectChannel(4);
-                    } else if (irCommand == IR_CODE_CH6) {
-                        Serial.println(" -> Akcja: [CH 6]");
-                        selectChannel(5);
-                    } else if (irCommand == IR_CODE_CH7) {
-                        Serial.println(" -> Akcja: [CH 7]");
-                        selectChannel(6);
-                    } else if (irCommand == IR_CODE_CH8) {
-                        Serial.println(" -> Akcja: [CH 8]");
-                        selectChannel(7);
-                    } else if (irCommand == IR_CODE_NEXT) {
-                        Serial.println(" -> Akcja: [NASTĘPNY]");
-                        selectChannel(currentChannel + 1);
-                    } else if (irCommand == IR_CODE_PREV) {
-                        Serial.println(" -> Akcja: [POPRZEDNI]");
-                        selectChannel(currentChannel - 1);
-                    } else {
-                        Serial.println(" -> Akcja: [NIEZNANY PRZYCISK]");
-                    }
+                    if (irCommand == IR_CODE_CH1)      selectChannel(0);
+                    else if (irCommand == IR_CODE_CH2) selectChannel(1);
+                    else if (irCommand == IR_CODE_CH3) selectChannel(2);
+                    else if (irCommand == IR_CODE_CH4) selectChannel(3);
+                    else if (irCommand == IR_CODE_CH5) selectChannel(4);
+                    else if (irCommand == IR_CODE_CH6) selectChannel(5);
+                    else if (irCommand == IR_CODE_CH7) selectChannel(6);
+                    else if (irCommand == IR_CODE_CH8) selectChannel(7);
+                    else if (irCommand == IR_CODE_NEXT) selectChannel(currentChannel + 1);
+                    else if (irCommand == IR_CODE_PREV) selectChannel(currentChannel - 1);
                 }
             }
         }
@@ -284,14 +253,11 @@ void setup() {
     sensors.begin();
     sensors.setWaitForConversion(false);
 
-    // Inicjalizacja przekaźnika zasilania głównego
     pinMode(POWER_RELAY_PIN, OUTPUT);
     digitalWrite(POWER_RELAY_PIN, LOW);
 
-    // Inicjalizacja odbiornika IR
     IrReceiver.begin(IR_RECEIVE_PIN, DISABLE_LED_FEEDBACK);
 
-    // Konfiguracja chłodzenia
     pinMode(FAN_PWM_PIN, OUTPUT);
     pinMode(FAN_ALARM_PIN, OUTPUT);
     pinMode(FAN_TACHO_PIN, INPUT_PULLUP);
@@ -299,51 +265,73 @@ void setup() {
 
     attachInterrupt(digitalPinToInterrupt(FAN_TACHO_PIN), countTacho, FALLING);
 
-    // Konfiguracja wyjść przekaźników
     for (int i = 0; i < 8; i++) {
         pinMode(selectorPins[i], OUTPUT);
         digitalWrite(selectorPins[i], LOW);
     }
 
-    // Start w trybie Wyłączonym (Standby)
     setPower(false);
 
     sensors.requestTemperatures();
-    Serial.println("Sterownik A-136 gotowy (Tryb Standby). Oczekiwanie na wybudzenie...");
+    Serial.println("Sterownik A-136 gotowy (Tryb Standby).");
     Serial.println("-------------------------------------------------------");
 }
 
 void loop() {
-    // 1. OBSŁUGA PILOTA IR (Główna metoda wybudzania/przełączania)
+    // 1. OBSŁUGA PILOTA IR
     handleIR();
 
-    // 2. OBSŁUGA PRZYCISKÓW FIZYCZNYCH Z HW-154
+    // 2. OBSŁUGA PRZYCISKÓW HW-154 Z DŁUGIM PRZYTRZYMANIEM S1
     uint8_t buttons = tm.readButtons();
+    static unsigned long s1PressStartTime = 0;
+    static bool s1Handled = false;
 
-    if (buttons != 0) {
-        // Jeśli wzmacniacz jest WYŁĄCZONY – naciśnięcie dowolnego przycisku (np. S1) wybudza urządzenie
-        if (!powerState) {
+    if (!powerState) {
+        // Gdy wzmacniacz jest WYŁĄCZONY – dowolne kliknięcie wybudza
+        if (buttons != 0) {
             setPower(true);
-            delay(300); // Debouncing
-        } 
-        // Jeśli wzmacniacz jest WŁĄCZONY – przyciski S1..S8 wybierają kanały CH1..CH8
-        else {
-            int pressedBit = -1;
-            for (int i = 0; i < 8; i++) {
-                if (buttons & (1 << i)) {
-                    pressedBit = i;
-                    break;
-                }
+            delay(300); 
+        }
+    } else {
+        // Gdy wzmacniacz jest WŁĄCZONY
+        if (buttons & 0x01) { // Przycisk S1 jest wciśnięty
+            if (s1PressStartTime == 0) {
+                s1PressStartTime = millis();
+                s1Handled = false;
+            } else if (!s1Handled && (millis() - s1PressStartTime >= 1500)) {
+                // Wytrzymano 1.5 sekundy -> WYŁĄCZENIE WZMACNIACZA
+                setPower(false);
+                s1Handled = true;
+                s1PressStartTime = 0;
+                delay(300);
             }
+        } else {
+            // Przycisk S1 został puszczony przed upływem 1.5s -> Krótkie kliknięcie (Wybór CH1)
+            if (s1PressStartTime != 0 && !s1Handled) {
+                selectChannel(0);
+            }
+            s1PressStartTime = 0;
+            s1Handled = false;
 
-            if (pressedBit != -1 && pressedBit != currentChannel) {
-                selectChannel(pressedBit);
-                delay(200); // Antydrabik
+            // Pozostałe przyciski S2..S8
+            if (buttons != 0 && !(buttons & 0x01)) {
+                int pressedBit = -1;
+                for (int i = 1; i < 8; i++) {
+                    if (buttons & (1 << i)) {
+                        pressedBit = i;
+                        break;
+                    }
+                }
+
+                if (pressedBit != -1 && pressedBit != currentChannel) {
+                    selectChannel(pressedBit);
+                    delay(200);
+                }
             }
         }
     }
 
-    // 3. OBSŁUGA CHŁODZENIA I RUCHU TEMPERATURY (Tylko gdy WŁĄCZONY)
+    // 3. OBSŁUGA CHŁODZENIA I TEMPERATURY (Tylko w trybie ON)
     if (powerState) {
         unsigned long currentMillis = millis();
 
@@ -368,7 +356,6 @@ void loop() {
             }
             analogWrite(FAN_PWM_PIN, pwmValue);
 
-            // Weryfikacja awarii
             if (pwmValue > 0 && rpm == 0) {
                 digitalWrite(FAN_ALARM_PIN, HIGH);
                 fanAlarmState = true;
@@ -377,7 +364,6 @@ void loop() {
                 fanAlarmState = false;
             }
 
-            // Diagnostic Serial Log
             Serial.print("[STAT] CH:"); Serial.print(currentChannel + 1);
             Serial.print(" ("); Serial.print(channelNames[currentChannel]); Serial.print(") | ");
             Serial.print("F1: "); Serial.print(temp, 1); Serial.print("°C, ");

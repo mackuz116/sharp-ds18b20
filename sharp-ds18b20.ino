@@ -258,6 +258,10 @@ void setup() {
     pinMode(POWER_RELAY_PIN, OUTPUT);
     digitalWrite(POWER_RELAY_PIN, LOW);
 
+    // Inicjalizacja HW-154 zaraz po włączeniu zasilania (dla sprawnego czytania przycisków w Standby)
+    tm.displayBegin();
+    tm.reset();
+
     IrReceiver.begin(IR_RECEIVE_PIN, DISABLE_LED_FEEDBACK);
 
     pinMode(FAN_PWM_PIN, OUTPUT);
@@ -283,7 +287,7 @@ void loop() {
     // 1. OBSŁUGA PILOTA IR
     handleIR();
 
-    // 2. OBSŁUGA PRZYCISKÓW HW-154 Z ODODNIOWIONĄ LOGIKĄ S1
+    // 2. OBSŁUGA PRZYCISKÓW HW-154
     uint8_t buttons = tm.readButtons();
     static unsigned long s1PressStartTime = 0;
     static bool s1Handled = false;
@@ -296,10 +300,10 @@ void loop() {
     }
 
     if (!powerState) {
-        // Gdy WYŁĄCZONY – włączaj tylko po nowym naciśnięciu (po puszczeniu poprzedniego)
+        // Gdy WYŁĄCZONY – włączaj po wciśnięciu przycisku (gdy nie ma blokady zatrzaskowej)
         if (buttons != 0 && !waitButtonsRelease) {
             setPower(true);
-            waitButtonsRelease = true; // Zabezpieczenie przed wielokrotnym odpaleniem
+            waitButtonsRelease = true; // Zabezpieczenie przed powtórną reakcją
         }
     } else {
         // Gdy WŁĄCZONY

@@ -88,7 +88,7 @@ const int EEPROM_ADDR_CHANNEL = 0;
 TM1638plus tm(STROBE_TM, CLOCK_TM, DIO_TM, false);
 
 // --- ODBIORNIK IR ---
-#define IR_RECEIVE_PIN 13
+#define IR_RECEIVE_PIN 5
 
 // --- CZUJNIKI TEMPERATURY I CHŁODZENIE ---
 #define ONE_WIRE_BUS 8

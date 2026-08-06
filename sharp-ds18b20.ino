@@ -13,19 +13,19 @@
  D2           | Wentylator 1 - TACHO (RPM)      | Przerwanie sprzętowe INT0
  D3           | Wentylator 2 - TACHO (RPM)      | Przerwanie sprzętowe INT1
  D4           | Selektor Przekaźników - CH1     | Wyjście cyfrowe Break-Before-Make
- D5           | Sygnalizacja Alarmu - Went. 1+2 | Zsumowane wyjście alarmowe (LED)
- D6           | Moduł HW-154 - DIO              | Linia danych TM1638 (Podpięta do D6)
+ D5           | Odbiornik IR (DATA / OUT)       | Odbiornik IR (np. VS1838B)
+ D6           | Moduł HW-154 - DIO              | Linia danych TM1638
  D7           | Selektor Przekaźników - CH2     | Wyjście cyfrowe Break-Before-Make
  D8           | Czujniki Temp. DS18B20 (1-Wire) | Magistrala OneWire (F1 i F2)
  D9           | Wentylator 1 - Sterowanie PWM   | Wyjście PWM (Timer 1)
  D10          | Wentylator 2 - Sterowanie PWM   | Wyjście PWM (Timer 1)
  D11          | Moduł HW-154 - STB (Strobe)     | Linia wyboru układu TM1638
  D12          | Moduł HW-154 - CLK (Clock)      | Linia zegarowa TM1638
- D13          | Odbiornik IR (DATA / OUT)       | Odbiornik IR (np. VS1838B)
+ D13          | WOLNY                           | 
  A0           | Selektor Przekaźników - CH3     | Wyjście cyfrowe GPIO
  A1           | Selektor Przekaźników - CH4     | Wyjście cyfrowe GPIO
  A2           | Selektor Przekaźników - CH5     | Wyjście cyfrowe GPIO
- A3           | Selektor Przekaźników - CH6     | Wyjście cyfrowe GPIO
+ A3           | Sygnalizacja Alarmu - Went. 1+2 | Zsumowane wyjście alarmowe GPIO
  A4           | Selektor Przekaźników - CH7     | Wyjście cyfrowe GPIO
  A5           | Selektor Przekaźników - CH8     | Wyjście cyfrowe GPIO
  A6 / A7      | WOLNE                           | Dostępne tylko jako wejścia ADC
@@ -51,7 +51,7 @@
 #include <IRremote.hpp>
 
 // ===================================================================================
-//             DEFINICJE KODÓW PILOTA IR (PODMIEŃ WARTOŚCI NA SWOJE)
+//             ZWERYFIKOWANE KODY TWOJEGO PILOTA IR (PROTOKÓŁ NEC)
 // ===================================================================================
 const uint32_t IR_CODE_CH1  = 0x0C; // Przycisk 1 (CD)
 const uint32_t IR_CODE_CH2  = 0x18; // Przycisk 2 (DAC)
@@ -62,8 +62,8 @@ const uint32_t IR_CODE_CH6  = 0x5A; // Przycisk 6 (TAPE)
 const uint32_t IR_CODE_CH7  = 0x42; // Przycisk 7 (PHON)
 const uint32_t IR_CODE_CH8  = 0x52; // Przycisk 8 (TUNR)
 
-const uint32_t IR_CODE_NEXT = 0x09; // Przycisk CH+ / Strzałka w prawo
-const uint32_t IR_CODE_PREV = 0x15; // Przycisk CH- / Strzałka w lewo
+const uint32_t IR_CODE_NEXT = 0x09; // Przycisk opcjonalny (np. Ch+)
+const uint32_t IR_CODE_PREV = 0x15; // Przycisk opcjonalny (np. Ch-)
 // ===================================================================================
 
 // Nazwy wejść wyświetlane na panelu (max 4 znaki)
@@ -104,7 +104,7 @@ const int PWM_MIN      = 45;
 
 const int pwmPins[2]   = {9, 10};  
 const int tachoPins[2] = {2, 3};   
-const int COMMON_ALARM_PIN = 5;
+const int COMMON_ALARM_PIN = A3; // Wyjście sygnału alarmowego awarii wentylatorów
 
 bool fanEnabled[2]   = {true, true};
 const int fanType[2] = {1, 1};      
@@ -120,7 +120,7 @@ void countTacho0() { tachoCount[0]++; }
 void countTacho1() { tachoCount[1]++; }
 
 // --- SELEKTOR WEJŚĆ ---
-const int selectorPins[8] = {4, 7, A0, A1, A2, A3, A4, A5};
+const int selectorPins[8] = {4, 7, A0, A1, A2, A4, A5, 13}; // D4, D7, A0, A1, A2, A4, A5, D13
 int currentChannel = 0;
 float currentTempToDisplay = 0.0;
 
@@ -175,28 +175,16 @@ void selectChannel(int channel) {
     Serial.println("]");
 }
 
-// --- PEŁNA DIAGNOSTYKA SYGNAŁU IR NA SERIAL MONITORZE ---
+// --- OBSŁUGA SYGNAŁU PILOTA IR ---
 void handleIR() {
     if (IrReceiver.decode()) {
-        // Ignorujemy powtórzenia przytrzymanego przycisku (Repeat Code)
         if (!(IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT)) {
             uint32_t irCommand = IrReceiver.decodedIRData.command;
-            uint16_t irAddress = IrReceiver.decodedIRData.address;
 
             if (irCommand != 0) {
-                // Szegółowy wydruk odebranego sygnału w Serial Monitorze
-                Serial.print("[IR DETECT] Protokół: ");
-                Serial.print(getProtocolString(IrReceiver.decodedIRData.protocol));
-                Serial.print(" | Adres: 0x");
-                Serial.print(irAddress, HEX);
-                Serial.print(" | Komenda HEX: 0x");
-                if (irCommand < 0x10) Serial.print("0"); // Dopasowanie formatu 0x0X
+                Serial.print("[IR DETECT] Komenda HEX: 0x");
                 Serial.print(irCommand, HEX);
-                Serial.print(" (DEC: ");
-                Serial.print(irCommand);
-                Serial.print(")");
 
-                // Obsługa przełączania kanałów
                 if (irCommand == IR_CODE_CH1) {
                     Serial.println(" -> Akcja: [CH 1]");
                     selectChannel(0);
@@ -232,7 +220,7 @@ void handleIR() {
                 }
             }
         }
-        IrReceiver.resume(); // Odblokowanie odbiornika na kolejny sygnał
+        IrReceiver.resume();
     }
 }
 
@@ -285,7 +273,7 @@ void setup() {
     selectChannel(savedChannel);
 
     sensors.requestTemperatures();
-    Serial.println("Sterownik A-136 gotowy do pracy (z pełną diagnostyką IR).");
+    Serial.println("Sterownik A-136 gotowy do pracy (IR + HW-154).");
     Serial.println("-------------------------------------------------------");
 }
 
@@ -293,7 +281,7 @@ void loop() {
     // 1. OBSŁUGA PILOTA IR (NATYCHMIASTOWA)
     handleIR();
 
-    // 2. OBSŁUGA PRZYCISKÓW H-154 (S1-S8)
+    // 2. OBSŁUGA PRZYCISKÓW HW-154 (S1-S8)
     uint8_t buttons = tm.readButtons();
 
     if (buttons != 0) {
@@ -354,7 +342,7 @@ void loop() {
             }
         }
 
-        // Aktywacja wspólnej linii alarmu D5
+        // Aktywacja wspólnej linii alarmu A3
         if (fanAlarmState[0] || fanAlarmState[1]) {
             digitalWrite(COMMON_ALARM_PIN, HIGH);
         } else {

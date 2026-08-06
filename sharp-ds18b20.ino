@@ -175,27 +175,61 @@ void selectChannel(int channel) {
     Serial.println("]");
 }
 
-// --- OBSŁUGA KOMEND PILOTA IR ---
+// --- PEŁNA DIAGNOSTYKA SYGNAŁU IR NA SERIAL MONITORZE ---
 void handleIR() {
     if (IrReceiver.decode()) {
         // Ignorujemy powtórzenia przytrzymanego przycisku (Repeat Code)
         if (!(IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT)) {
             uint32_t irCommand = IrReceiver.decodedIRData.command;
+            uint16_t irAddress = IrReceiver.decodedIRData.address;
 
             if (irCommand != 0) {
-                Serial.print("[IR] Odebrano komendę HEX: 0x");
-                Serial.println(irCommand, HEX);
+                // Szegółowy wydruk odebranego sygnału w Serial Monitorze
+                Serial.print("[IR DETECT] Protokół: ");
+                Serial.print(getProtocolString(IrReceiver.decodedIRData.protocol));
+                Serial.print(" | Adres: 0x");
+                Serial.print(irAddress, HEX);
+                Serial.print(" | Komenda HEX: 0x");
+                if (irCommand < 0x10) Serial.print("0"); // Dopasowanie formatu 0x0X
+                Serial.print(irCommand, HEX);
+                Serial.print(" (DEC: ");
+                Serial.print(irCommand);
+                Serial.print(")");
 
-                if (irCommand == IR_CODE_CH1)      selectChannel(0);
-                else if (irCommand == IR_CODE_CH2) selectChannel(1);
-                else if (irCommand == IR_CODE_CH3) selectChannel(2);
-                else if (irCommand == IR_CODE_CH4) selectChannel(3);
-                else if (irCommand == IR_CODE_CH5) selectChannel(4);
-                else if (irCommand == IR_CODE_CH6) selectChannel(5);
-                else if (irCommand == IR_CODE_CH7) selectChannel(6);
-                else if (irCommand == IR_CODE_CH8) selectChannel(7);
-                else if (irCommand == IR_CODE_NEXT) selectChannel(currentChannel + 1);
-                else if (irCommand == IR_CODE_PREV) selectChannel(currentChannel - 1);
+                // Obsługa przełączania kanałów
+                if (irCommand == IR_CODE_CH1) {
+                    Serial.println(" -> Akcja: [CH 1]");
+                    selectChannel(0);
+                } else if (irCommand == IR_CODE_CH2) {
+                    Serial.println(" -> Akcja: [CH 2]");
+                    selectChannel(1);
+                } else if (irCommand == IR_CODE_CH3) {
+                    Serial.println(" -> Akcja: [CH 3]");
+                    selectChannel(2);
+                } else if (irCommand == IR_CODE_CH4) {
+                    Serial.println(" -> Akcja: [CH 4]");
+                    selectChannel(3);
+                } else if (irCommand == IR_CODE_CH5) {
+                    Serial.println(" -> Akcja: [CH 5]");
+                    selectChannel(4);
+                } else if (irCommand == IR_CODE_CH6) {
+                    Serial.println(" -> Akcja: [CH 6]");
+                    selectChannel(5);
+                } else if (irCommand == IR_CODE_CH7) {
+                    Serial.println(" -> Akcja: [CH 7]");
+                    selectChannel(6);
+                } else if (irCommand == IR_CODE_CH8) {
+                    Serial.println(" -> Akcja: [CH 8]");
+                    selectChannel(7);
+                } else if (irCommand == IR_CODE_NEXT) {
+                    Serial.println(" -> Akcja: [NASTĘPNY]");
+                    selectChannel(currentChannel + 1);
+                } else if (irCommand == IR_CODE_PREV) {
+                    Serial.println(" -> Akcja: [POPRZEDNI]");
+                    selectChannel(currentChannel - 1);
+                } else {
+                    Serial.println(" -> Akcja: [NIEZNANY PRZYCISK]");
+                }
             }
         }
         IrReceiver.resume(); // Odblokowanie odbiornika na kolejny sygnał
@@ -251,7 +285,7 @@ void setup() {
     selectChannel(savedChannel);
 
     sensors.requestTemperatures();
-    Serial.println("Sterownik A-136 gotowy do pracy (z obsługą IR).");
+    Serial.println("Sterownik A-136 gotowy do pracy (z pełną diagnostyką IR).");
     Serial.println("-------------------------------------------------------");
 }
 
@@ -320,7 +354,7 @@ void loop() {
             }
         }
 
-        // Aktywacja wspólnej linii alarmu D5, jeśli którykolwiek wentylator zgłasza błąd
+        // Aktywacja wspólnej linii alarmu D5
         if (fanAlarmState[0] || fanAlarmState[1]) {
             digitalWrite(COMMON_ALARM_PIN, HIGH);
         } else {

@@ -96,6 +96,7 @@ TM1638plus tm(STROBE_TM, CLOCK_TM, DIO_TM, false);
 // --- STEROWANIE ZASILANIEM GŁÓWNYM ---
 #define POWER_RELAY_PIN 10 // Pin sterujący przekaźnikiem zasilania 230V
 bool powerState = false;   // false = Standby (OFF), true = Praca (ON)
+bool waitButtonsRelease = false; // Flaga blokująca natychmiastowe ponowne włączenie
 
 // --- CZUJNIK TEMPERATURY I CHŁODZENIE (1 WENTYLATOR) ---
 #define ONE_WIRE_BUS 8
@@ -211,6 +212,7 @@ void setPower(bool turnOn) {
         fanAlarmState = false;
 
         tm.reset();
+        waitButtonsRelease = true; // Wymagaj puszczenia przycisku przed ponownym włączeniem
 
         Serial.println(">>> WZMACNIACZ WYŁĄCZONY [STANDBY]");
     }
@@ -281,32 +283,36 @@ void loop() {
     // 1. OBSŁUGA PILOTA IR
     handleIR();
 
-    // 2. OBSŁUGA PRZYCISKÓW HW-154 Z DŁUGIM PRZYTRZYMANIEM S1
+    // 2. OBSŁUGA PRZYCISKÓW HW-154 Z ODODNIOWIONĄ LOGIKĄ S1
     uint8_t buttons = tm.readButtons();
     static unsigned long s1PressStartTime = 0;
     static bool s1Handled = false;
 
+    // Resetuj flagę zatrzaskową, gdy wszystkie przyciski zostaną puszczone
+    if (buttons == 0) {
+        waitButtonsRelease = false;
+        s1PressStartTime = 0;
+        s1Handled = false;
+    }
+
     if (!powerState) {
-        // Gdy wzmacniacz jest WYŁĄCZONY – dowolne kliknięcie wybudza
-        if (buttons != 0) {
+        // Gdy WYŁĄCZONY – włączaj tylko po nowym naciśnięciu (po puszczeniu poprzedniego)
+        if (buttons != 0 && !waitButtonsRelease) {
             setPower(true);
-            delay(300); 
+            waitButtonsRelease = true; // Zabezpieczenie przed wielokrotnym odpaleniem
         }
     } else {
-        // Gdy wzmacniacz jest WŁĄCZONY
-        if (buttons & 0x01) { // Przycisk S1 jest wciśnięty
-            if (s1PressStartTime == 0) {
+        // Gdy WŁĄCZONY
+        if (buttons & 0x01) { // Przycisk S1 wciśnięty
+            if (s1PressStartTime == 0 && !s1Handled) {
                 s1PressStartTime = millis();
-                s1Handled = false;
-            } else if (!s1Handled && (millis() - s1PressStartTime >= 1500)) {
-                // Wytrzymano 1.5 sekundy -> WYŁĄCZENIE WZMACNIACZA
-                setPower(false);
+            } else if (!s1Handled && (millis() - s1PressStartTime >= 1200)) {
+                // Po przytrzymaniu przez 1.2s -> Wyłączenie
                 s1Handled = true;
-                s1PressStartTime = 0;
-                delay(300);
+                setPower(false);
             }
         } else {
-            // Przycisk S1 został puszczony przed upływem 1.5s -> Krótkie kliknięcie (Wybór CH1)
+            // Puszczenie S1 przed upływem 1.2s -> Przełączenie na CH1
             if (s1PressStartTime != 0 && !s1Handled) {
                 selectChannel(0);
             }

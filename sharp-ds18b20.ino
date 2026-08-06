@@ -1,8 +1,9 @@
 /*
  =====================================================================================
-           STEROWNIK WZMACNIACZA A-136 (CHŁODZENIE + SELEKTOR 8 CH + HW-154 + IR)
+           STEROWNIK WZMACNIACZA A-136 (SINGLE FAN + SELECTOR + HW-154 + IR + POWER)
  =====================================================================================
  Hardware: Arduino Pro Mini (5V / 16MHz) + Moduł TM1638 (HW-154) + Odbiornik IR
+ Zasilanie: Małe trafko Standby (Arduino działa non-stop)
  -------------------------------------------------------------------------------------
  PEŁNA MAPA POŁĄCZEŃ PINÓW (HARDWARE PINOUT):
  -------------------------------------------------------------------------------------
@@ -11,23 +12,23 @@
  D0 (RX)      | Serial Monitor (Programowanie)  | Narzędzie diagnostyczne (9600 baud)
  D1 (TX)      | Serial Monitor (Programowanie)  | Narzędzie diagnostyczne (9600 baud)
  D2           | Wentylator 1 - TACHO (RPM)      | Przerwanie sprzętowe INT0
- D3           | Wentylator 2 - TACHO (RPM)      | Przerwanie sprzętowe INT1
+ D3           | WOLNY                           | 
  D4           | Selektor Przekaźników - CH1     | Wyjście cyfrowe Break-Before-Make
  D5           | Odbiornik IR (DATA / OUT)       | Odbiornik IR (np. VS1838B)
  D6           | Moduł HW-154 - DIO              | Linia danych TM1638
  D7           | Selektor Przekaźników - CH2     | Wyjście cyfrowe Break-Before-Make
- D8           | Czujniki Temp. DS18B20 (1-Wire) | Magistrala OneWire (F1 i F2)
+ D8           | Czujniki Temp. DS18B20 (1-Wire) | Magistrala OneWire (F1)
  D9           | Wentylator 1 - Sterowanie PWM   | Wyjście PWM (Timer 1)
- D10          | Wentylator 2 - Sterowanie PWM   | Wyjście PWM (Timer 1)
+ D10          | PRZEKAŹNIK ZASILANIA GŁÓWNEGO   | High = ON (Wzmacniacz włączony)
  D11          | Moduł HW-154 - STB (Strobe)     | Linia wyboru układu TM1638
  D12          | Moduł HW-154 - CLK (Clock)      | Linia zegarowa TM1638
- D13          | WOLNY                           | 
+ D13          | Selektor Przekaźników - CH8     | Wyjście cyfrowe GPIO
  A0           | Selektor Przekaźników - CH3     | Wyjście cyfrowe GPIO
  A1           | Selektor Przekaźników - CH4     | Wyjście cyfrowe GPIO
  A2           | Selektor Przekaźników - CH5     | Wyjście cyfrowe GPIO
- A3           | Sygnalizacja Alarmu - Went. 1+2 | Zsumowane wyjście alarmowe GPIO
- A4           | Selektor Przekaźników - CH7     | Wyjście cyfrowe GPIO
- A5           | Selektor Przekaźników - CH8     | Wyjście cyfrowe GPIO
+ A3           | Sygnalizacja Alarmu - Went. 1   | Wyjście sygnału awarii wentylatora
+ A4           | Selektor Przekaźników - CH6     | Wyjście cyfrowe GPIO
+ A5           | Selektor Przekaźników - CH7     | Wyjście cyfrowe GPIO
  A6 / A7      | WOLNE                           | Dostępne tylko jako wejścia ADC
  -------------------------------------------------------------------------------------
  AUTOMATYCZNY SKRYPT GIT (Uruchamiany w terminalu Linuxa w folderze projektu):
@@ -53,14 +54,16 @@
 // ===================================================================================
 //             ZWERYFIKOWANE KODY TWOJEGO PILOTA IR (PROTOKÓŁ NEC)
 // ===================================================================================
-const uint32_t IR_CODE_CH1  = 0x0C; // Przycisk 1 (CD)
-const uint32_t IR_CODE_CH2  = 0x18; // Przycisk 2 (DAC)
-const uint32_t IR_CODE_CH3  = 0x5E; // Przycisk 3 (TUBE)
-const uint32_t IR_CODE_CH4  = 0x08; // Przycisk 4 (AUX1)
-const uint32_t IR_CODE_CH5  = 0x1C; // Przycisk 5 (AUX2)
-const uint32_t IR_CODE_CH6  = 0x5A; // Przycisk 6 (TAPE)
-const uint32_t IR_CODE_CH7  = 0x42; // Przycisk 7 (PHON)
-const uint32_t IR_CODE_CH8  = 0x52; // Przycisk 8 (TUNR)
+const uint32_t IR_CODE_POWER = 0x45; // Przycisk Power na pilocie (ZMIEŃ NA SWÓJ KOD!)
+
+const uint32_t IR_CODE_CH1   = 0x0C; // Przycisk 1 (CD)
+const uint32_t IR_CODE_CH2   = 0x18; // Przycisk 2 (DAC)
+const uint32_t IR_CODE_CH3   = 0x5E; // Przycisk 3 (TUBE)
+const uint32_t IR_CODE_CH4   = 0x08; // Przycisk 4 (AUX1)
+const uint32_t IR_CODE_CH5   = 0x1C; // Przycisk 5 (AUX2)
+const uint32_t IR_CODE_CH6   = 0x5A; // Przycisk 6 (TAPE)
+const uint32_t IR_CODE_CH7   = 0x42; // Przycisk 7 (PHON)
+const uint32_t IR_CODE_CH8   = 0x52; // Przycisk 8 (TUNR)
 
 const uint32_t IR_CODE_NEXT = 0x15; // Przycisk opcjonalny (np. Ch+)
 const uint32_t IR_CODE_PREV = 0x7; // Przycisk opcjonalny (np. Ch-)
@@ -70,7 +73,7 @@ const uint32_t IR_CODE_PREV = 0x7; // Przycisk opcjonalny (np. Ch-)
 const char* channelNames[8] = {
     "CD  ",   // CH 1
     "DAC ",   // CH 2
-    "TUBE",   // CH 3 (przedwzmacniacz lampowy)
+    "TUBE",   // CH 3
     "AUX1",   // CH 4
     "AUX2",   // CH 5
     "TAPE",   // CH 6
@@ -90,52 +93,46 @@ TM1638plus tm(STROBE_TM, CLOCK_TM, DIO_TM, false);
 // --- ODBIORNIK IR ---
 #define IR_RECEIVE_PIN 5
 
-// --- CZUJNIKI TEMPERATURY I CHŁODZENIE ---
+// --- STEROWANIE ZASILANIEM GŁÓWNYM ---
+#define POWER_RELAY_PIN 10 // Pin sterujący przekaźnikiem zasilania 230V
+bool powerState = false;   // false = Standby (OFF), true = Praca (ON)
+
+// --- CZUJNIK TEMPERATURY I CHŁODZENIE (1 WENTYLATOR) ---
 #define ONE_WIRE_BUS 8
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 
 DeviceAddress fan1Sensor = { 0x28, 0xFF, 0x20, 0x64, 0x68, 0x14, 0x02, 0xC5 }; 
-DeviceAddress fan2Sensor = { 0x28, 0x3A, 0xE0, 0xAC, 0x08, 0x00, 0x00, 0x78 }; 
 
 const float TEMP_START = 40.0; 
 const float TEMP_MAX   = 70.0; 
 const int PWM_MIN      = 45; 
 
-const int pwmPins[2]   = {9, 10};  
-const int tachoPins[2] = {2, 3};   
-const int COMMON_ALARM_PIN = A3; // Wyjście sygnału alarmowego awarii wentylatorów
+const int FAN_PWM_PIN   = 9;  
+const int FAN_TACHO_PIN = 2;   
+const int FAN_ALARM_PIN = A3;
 
-bool fanEnabled[2]   = {true, true};
-const int fanType[2] = {1, 1};      
-
-volatile int tachoCount[2] = {0, 0};
+volatile int tachoCount = 0;
 unsigned long lastTempCheck = 0;
 const unsigned long tempInterval = 1000;
 
-// Flagi alarmowe dla wentylatorów
-bool fanAlarmState[2] = {false, false};
+bool fanAlarmState = false;
 
-void countTacho0() { tachoCount[0]++; }
-void countTacho1() { tachoCount[1]++; }
+void countTacho() { tachoCount++; }
 
 // --- SELEKTOR WEJŚĆ ---
-const int selectorPins[8] = {4, 7, A0, A1, A2, A4, A5, 13}; // D4, D7, A0, A1, A2, A4, A5, D13
+const int selectorPins[8] = {4, 7, A0, A1, A2, A4, A5, 13}; // CH1..CH8
 int currentChannel = 0;
 float currentTempToDisplay = 0.0;
 
 void updateDisplay() {
+    if (!powerState) return; // Brak odświeżania w trybie Standby
+
     char displayBuffer[9];
 
-    // Priorytet: Wyświetlanie błędu awarii wentylatora na LCD
-    if (fanAlarmState[0] && fanAlarmState[1]) {
-        snprintf(displayBuffer, sizeof(displayBuffer), "%-4sERR ALL", channelNames[currentChannel]);
-    } else if (fanAlarmState[0]) {
+    if (fanAlarmState) {
         snprintf(displayBuffer, sizeof(displayBuffer), "%-4sERR F1", channelNames[currentChannel]);
-    } else if (fanAlarmState[1]) {
-        snprintf(displayBuffer, sizeof(displayBuffer), "%-4sERR F2", channelNames[currentChannel]);
     } else {
-        // Normalny tryb wyświetlania (Nazwa + Temp)
         int displayTemp = (currentTempToDisplay > 0 && currentTempToDisplay < 125) ? (int)currentTempToDisplay : 0;
         snprintf(displayBuffer, sizeof(displayBuffer), "%-4s%2d C", channelNames[currentChannel], displayTemp);
     }
@@ -143,7 +140,57 @@ void updateDisplay() {
     tm.displayText(displayBuffer);
 }
 
+void setPower(bool turnOn) {
+    powerState = turnOn;
+
+    if (powerState) {
+        // --- WŁĄCZANIE WZMACNIACZA (POWER ON) ---
+        digitalWrite(POWER_RELAY_PIN, HIGH); // Załączenie zasilania głównego
+        
+        tm.displayBegin();
+        tm.reset();
+        tm.brightness(3);
+
+        // Efekt powitalny
+        tm.displayText("A-136 OK");
+        for (int i = 0; i < 8; i++) {
+            tm.setLED(i, 1);
+            delay(50);
+            tm.setLED(i, 0);
+        }
+        delay(200);
+
+        // Przywrócenie zapamiętanego kanału
+        byte savedChannel = EEPROM.read(EEPROM_ADDR_CHANNEL);
+        if (savedChannel > 7) savedChannel = 0;
+        selectChannel(savedChannel);
+
+        Serial.println(">>> WZMACNIACZ WŁĄCZONY [POWER ON]");
+    } else {
+        // --- WYŁĄCZANIE WZMACNIACZA (STANDBY / OFF) ---
+        // 1. Rozłączenie przekaźników audio
+        for (int i = 0; i < 8; i++) {
+            digitalWrite(selectorPins[i], LOW);
+        }
+
+        // 2. Wyłączenie przekaźnika zasilania głównego
+        digitalWrite(POWER_RELAY_PIN, LOW);
+
+        // 3. Wyłączenie wentylatora i alarmu
+        analogWrite(FAN_PWM_PIN, 0);
+        digitalWrite(FAN_ALARM_PIN, LOW);
+        fanAlarmState = false;
+
+        // 4. Całkowite wygaszenie modułu HW-154 (LCD + LED)
+        tm.reset();
+
+        Serial.println(">>> WZMACNIACZ WYŁĄCZONY [STANDBY]");
+    }
+}
+
 void selectChannel(int channel) {
+    if (!powerState) return; // Ignoruj przełączanie w trybie Standby
+
     if (channel < 0) channel = 7;
     if (channel > 7) channel = 0;
 
@@ -155,13 +202,13 @@ void selectChannel(int channel) {
     }
     delay(2); 
 
-    // 2. Załączenie przekaźnika
+    // 2. Załączenie wybranego przekaźnika
     digitalWrite(selectorPins[currentChannel], HIGH);
 
-    // 3. Zapis do nieulotnej pamięci EEPROM
+    // 3. Zapis w EEPROM
     EEPROM.update(EEPROM_ADDR_CHANNEL, currentChannel);
 
-    // 4. Załączenie odpowiedniej diody LED na HW-154
+    // 4. Wskaźniki LED na panelu
     for (int i = 0; i < 8; i++) {
         tm.setLED(i, (i == currentChannel) ? 1 : 0);
     }
@@ -175,7 +222,7 @@ void selectChannel(int channel) {
     Serial.println("]");
 }
 
-// --- OBSŁUGA SYGNAŁU PILOTA IR ---
+// --- OBSŁUGA PILOTA IR ---
 void handleIR() {
     if (IrReceiver.decode()) {
         if (!(IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT)) {
@@ -185,38 +232,46 @@ void handleIR() {
                 Serial.print("[IR DETECT] Komenda HEX: 0x");
                 Serial.print(irCommand, HEX);
 
-                if (irCommand == IR_CODE_CH1) {
-                    Serial.println(" -> Akcja: [CH 1]");
-                    selectChannel(0);
-                } else if (irCommand == IR_CODE_CH2) {
-                    Serial.println(" -> Akcja: [CH 2]");
-                    selectChannel(1);
-                } else if (irCommand == IR_CODE_CH3) {
-                    Serial.println(" -> Akcja: [CH 3]");
-                    selectChannel(2);
-                } else if (irCommand == IR_CODE_CH4) {
-                    Serial.println(" -> Akcja: [CH 4]");
-                    selectChannel(3);
-                } else if (irCommand == IR_CODE_CH5) {
-                    Serial.println(" -> Akcja: [CH 5]");
-                    selectChannel(4);
-                } else if (irCommand == IR_CODE_CH6) {
-                    Serial.println(" -> Akcja: [CH 6]");
-                    selectChannel(5);
-                } else if (irCommand == IR_CODE_CH7) {
-                    Serial.println(" -> Akcja: [CH 7]");
-                    selectChannel(6);
-                } else if (irCommand == IR_CODE_CH8) {
-                    Serial.println(" -> Akcja: [CH 8]");
-                    selectChannel(7);
-                } else if (irCommand == IR_CODE_NEXT) {
-                    Serial.println(" -> Akcja: [NASTĘPNY]");
-                    selectChannel(currentChannel + 1);
-                } else if (irCommand == IR_CODE_PREV) {
-                    Serial.println(" -> Akcja: [POPRZEDNI]");
-                    selectChannel(currentChannel - 1);
-                } else {
-                    Serial.println(" -> Akcja: [NIEZNANY PRZYCISK]");
+                // Przycisk Power działa zawsze (wybudza / uśpiewa)
+                if (irCommand == IR_CODE_POWER) {
+                    Serial.println(" -> Akcja: [POWER TOGGLE]");
+                    setPower(!powerState);
+                } 
+                // Pozostałe przyciski działają tylko, gdy wzmacniacz jest WŁĄCZONY
+                else if (powerState) {
+                    if (irCommand == IR_CODE_CH1) {
+                        Serial.println(" -> Akcja: [CH 1]");
+                        selectChannel(0);
+                    } else if (irCommand == IR_CODE_CH2) {
+                        Serial.println(" -> Akcja: [CH 2]");
+                        selectChannel(1);
+                    } else if (irCommand == IR_CODE_CH3) {
+                        Serial.println(" -> Akcja: [CH 3]");
+                        selectChannel(2);
+                    } else if (irCommand == IR_CODE_CH4) {
+                        Serial.println(" -> Akcja: [CH 4]");
+                        selectChannel(3);
+                    } else if (irCommand == IR_CODE_CH5) {
+                        Serial.println(" -> Akcja: [CH 5]");
+                        selectChannel(4);
+                    } else if (irCommand == IR_CODE_CH6) {
+                        Serial.println(" -> Akcja: [CH 6]");
+                        selectChannel(5);
+                    } else if (irCommand == IR_CODE_CH7) {
+                        Serial.println(" -> Akcja: [CH 7]");
+                        selectChannel(6);
+                    } else if (irCommand == IR_CODE_CH8) {
+                        Serial.println(" -> Akcja: [CH 8]");
+                        selectChannel(7);
+                    } else if (irCommand == IR_CODE_NEXT) {
+                        Serial.println(" -> Akcja: [NASTĘPNY]");
+                        selectChannel(currentChannel + 1);
+                    } else if (irCommand == IR_CODE_PREV) {
+                        Serial.println(" -> Akcja: [POPRZEDNI]");
+                        selectChannel(currentChannel - 1);
+                    } else {
+                        Serial.println(" -> Akcja: [NIEZNANY PRZYCISK]");
+                    }
                 }
             }
         }
@@ -229,37 +284,20 @@ void setup() {
     sensors.begin();
     sensors.setWaitForConversion(false);
 
+    // Inicjalizacja przekaźnika zasilania głównego
+    pinMode(POWER_RELAY_PIN, OUTPUT);
+    digitalWrite(POWER_RELAY_PIN, LOW);
+
     // Inicjalizacja odbiornika IR
     IrReceiver.begin(IR_RECEIVE_PIN, DISABLE_LED_FEEDBACK);
 
-    // Inicjalizacja wyświetlacza HW-154
-    tm.displayBegin();
-    tm.reset();
-    tm.brightness(3); 
+    // Konfiguracja chłodzenia
+    pinMode(FAN_PWM_PIN, OUTPUT);
+    pinMode(FAN_ALARM_PIN, OUTPUT);
+    pinMode(FAN_TACHO_PIN, INPUT_PULLUP);
+    digitalWrite(FAN_ALARM_PIN, LOW);
 
-    // Sekwencja startowa
-    tm.displayText("A-136 OK");
-    for (int i = 0; i < 8; i++) {
-        tm.setLED(i, 1);
-        delay(60);
-        tm.setLED(i, 0);
-    }
-    delay(400);
-
-    // Konfiguracja wyjść PWM, TACHO oraz wspólnego Alarmu
-    pinMode(COMMON_ALARM_PIN, OUTPUT);
-    digitalWrite(COMMON_ALARM_PIN, LOW);
-
-    for (int i = 0; i < 2; i++) {
-        pinMode(pwmPins[i], OUTPUT);
-
-        if (fanType[i] == 1) {
-            pinMode(tachoPins[i], INPUT_PULLUP);
-        }
-    }
-
-    if (fanType[0] == 1) attachInterrupt(digitalPinToInterrupt(tachoPins[0]), countTacho0, FALLING);
-    if (fanType[1] == 1) attachInterrupt(digitalPinToInterrupt(tachoPins[1]), countTacho1, FALLING);
+    attachInterrupt(digitalPinToInterrupt(FAN_TACHO_PIN), countTacho, FALLING);
 
     // Konfiguracja wyjść przekaźników
     for (int i = 0; i < 8; i++) {
@@ -267,111 +305,88 @@ void setup() {
         digitalWrite(selectorPins[i], LOW);
     }
 
-    // Odczyt zapamiętanego kanału z EEPROM
-    byte savedChannel = EEPROM.read(EEPROM_ADDR_CHANNEL);
-    if (savedChannel > 7) savedChannel = 0;
-    selectChannel(savedChannel);
+    // Start w trybie Wyłączonym (Standby)
+    setPower(false);
 
     sensors.requestTemperatures();
-    Serial.println("Sterownik A-136 gotowy do pracy (IR + HW-154).");
+    Serial.println("Sterownik A-136 gotowy (Tryb Standby). Oczekiwanie na wybudzenie...");
     Serial.println("-------------------------------------------------------");
 }
 
 void loop() {
-    // 1. OBSŁUGA PILOTA IR (NATYCHMIASTOWA)
+    // 1. OBSŁUGA PILOTA IR (Główna metoda wybudzania/przełączania)
     handleIR();
 
-    // 2. OBSŁUGA PRZYCISKÓW HW-154 (S1-S8)
+    // 2. OBSŁUGA PRZYCISKÓW FIZYCZNYCH Z HW-154
     uint8_t buttons = tm.readButtons();
 
     if (buttons != 0) {
-        int pressedBit = -1;
-        for (int i = 0; i < 8; i++) {
-            if (buttons & (1 << i)) {
-                pressedBit = i;
-                break;
+        // Jeśli wzmacniacz jest WYŁĄCZONY – naciśnięcie dowolnego przycisku (np. S1) wybudza urządzenie
+        if (!powerState) {
+            setPower(true);
+            delay(300); // Debouncing
+        } 
+        // Jeśli wzmacniacz jest WŁĄCZONY – przyciski S1..S8 wybierają kanały CH1..CH8
+        else {
+            int pressedBit = -1;
+            for (int i = 0; i < 8; i++) {
+                if (buttons & (1 << i)) {
+                    pressedBit = i;
+                    break;
+                }
             }
-        }
 
-        if (pressedBit != -1 && pressedBit != currentChannel) {
-            selectChannel(pressedBit);
-            delay(200); // Antydrabik
+            if (pressedBit != -1 && pressedBit != currentChannel) {
+                selectChannel(pressedBit);
+                delay(200); // Antydrabik
+            }
         }
     }
 
-    // 3. CHŁODZENIE, DIAGNOSTYKA SERIAL I EKRAN (Co 1000 ms)
-    unsigned long currentMillis = millis();
-    static bool showSensor2 = false;
+    // 3. OBSŁUGA CHŁODZENIA I RUCHU TEMPERATURY (Tylko gdy WŁĄCZONY)
+    if (powerState) {
+        unsigned long currentMillis = millis();
 
-    if (currentMillis - lastTempCheck >= tempInterval) {
-        lastTempCheck = currentMillis;
+        if (currentMillis - lastTempCheck >= tempInterval) {
+            lastTempCheck = currentMillis;
 
-        float t1 = sensors.getTempC(fan1Sensor);
-        float t2 = sensors.getTempC(fan2Sensor);
+            float temp = sensors.getTempC(fan1Sensor);
+            sensors.requestTemperatures();
 
-        sensors.requestTemperatures();
+            int pwmValue = 0;
 
-        float temps[2] = {t1, t2};
-        int pwmValues[2] = {0, 0};
+            noInterrupts();
+            int rpm = (tachoCount / 2) * 60;
+            tachoCount = 0;
+            interrupts();
 
-        noInterrupts();
-        int rpm[2];
-        rpm[0] = (tachoCount[0] / 2) * 60;
-        rpm[1] = (tachoCount[1] / 2) * 60;
-        tachoCount[0] = 0;
-        tachoCount[1] = 0;
-        interrupts();
-
-        // Przeliczenie sterowania i detekcja awarii
-        for (int i = 0; i < 2; i++) {
-            if (fanEnabled[i]) {
-                if (temps[i] < TEMP_START) {
-                    pwmValues[i] = 0;
-                } else {
-                    float constrainedTemp = constrain(temps[i], TEMP_START, TEMP_MAX);
-                    pwmValues[i] = map(constrainedTemp, TEMP_START, TEMP_MAX, PWM_MIN, 255);
-                }
-                analogWrite(pwmPins[i], pwmValues[i]);
-
-                // Weryfikacja awarii
-                if (pwmValues[i] > 0 && rpm[i] == 0) {
-                    fanAlarmState[i] = true;
-                } else {
-                    fanAlarmState[i] = false;
-                }
+            if (temp < TEMP_START) {
+                pwmValue = 0;
+            } else {
+                float constrainedTemp = constrain(temp, TEMP_START, TEMP_MAX);
+                pwmValue = map(constrainedTemp, TEMP_START, TEMP_MAX, PWM_MIN, 255);
             }
+            analogWrite(FAN_PWM_PIN, pwmValue);
+
+            // Weryfikacja awarii
+            if (pwmValue > 0 && rpm == 0) {
+                digitalWrite(FAN_ALARM_PIN, HIGH);
+                fanAlarmState = true;
+            } else {
+                digitalWrite(FAN_ALARM_PIN, LOW);
+                fanAlarmState = false;
+            }
+
+            // Diagnostic Serial Log
+            Serial.print("[STAT] CH:"); Serial.print(currentChannel + 1);
+            Serial.print(" ("); Serial.print(channelNames[currentChannel]); Serial.print(") | ");
+            Serial.print("F1: "); Serial.print(temp, 1); Serial.print("°C, ");
+            Serial.print("PWM: "); Serial.print(map(pwmValue, 0, 255, 0, 100)); Serial.print("%, ");
+            Serial.print("RPM: "); Serial.print(rpm); 
+            if (fanAlarmState) Serial.println(" [ALARM!]"); else Serial.println(" [OK]");
+
+            currentTempToDisplay = temp;
+            updateDisplay();
         }
-
-        // Aktywacja wspólnej linii alarmu A3
-        if (fanAlarmState[0] || fanAlarmState[1]) {
-            digitalWrite(COMMON_ALARM_PIN, HIGH);
-        } else {
-            digitalWrite(COMMON_ALARM_PIN, LOW);
-        }
-
-        // --- PEŁNY RAPORT DIAGNOSTYCZNY W SERIAL MONITORZE ---
-        Serial.print("[STAT] ");
-        Serial.print("CH:"); Serial.print(currentChannel + 1);
-        Serial.print(" ("); Serial.print(channelNames[currentChannel]); Serial.print(") | ");
-        
-        // Wentylator 1
-        Serial.print("F1: "); Serial.print(temps[0], 1); Serial.print("°C, ");
-        Serial.print("PWM: "); Serial.print(map(pwmValues[0], 0, 255, 0, 100)); Serial.print("%, ");
-        Serial.print("RPM: "); Serial.print(rpm[0]); 
-        if (fanAlarmState[0]) Serial.print(" [ALARM!] "); else Serial.print(" [OK] ");
-        
-        Serial.print("| ");
-
-        // Wentylator 2
-        Serial.print("F2: "); Serial.print(temps[1], 1); Serial.print("°C, ");
-        Serial.print("PWM: "); Serial.print(map(pwmValues[1], 0, 255, 0, 100)); Serial.print("%, ");
-        Serial.print("RPM: "); Serial.print(rpm[1]); 
-        if (fanAlarmState[1]) Serial.println(" [ALARM!]"); else Serial.println(" [OK]");
-
-        // Odświeżenie ekranu LCD
-        currentTempToDisplay = showSensor2 ? t2 : t1;
-        updateDisplay();
-
-        showSensor2 = !showSensor2;
     }
 }

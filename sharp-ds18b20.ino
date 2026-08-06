@@ -1,30 +1,72 @@
 /*
  =====================================================================================
-           STEROWNIK WZMACNIACZA A-136 (CHŁODZENIE + SELEKTOR 8 CH + HW-154)
+           STEROWNIK WZMACNIACZA A-136 (CHŁODZENIE + SELEKTOR 8 CH + HW-154 + IR)
  =====================================================================================
- Hardware: Arduino Pro Mini (5V / 16MHz) + Moduł HW-154 (TM1638)
+ Hardware: Arduino Pro Mini (5V / 16MHz) + Moduł TM1638 (HW-154) + Odbiornik IR
+ -------------------------------------------------------------------------------------
+ PEŁNA MAPA POŁĄCZEŃ PINÓW (HARDWARE PINOUT):
+ -------------------------------------------------------------------------------------
+ Pin Arduino   | Funkcja / Moduł                 | Uwagi / Opis
+ -------------+---------------------------------+-------------------------------------
+ D0 (RX)      | Serial Monitor (Programowanie)  | Narzędzie diagnostyczne (9600 baud)
+ D1 (TX)      | Serial Monitor (Programowanie)  | Narzędzie diagnostyczne (9600 baud)
+ D2           | Wentylator 1 - TACHO (RPM)      | Przerwanie sprzętowe INT0
+ D3           | Wentylator 2 - TACHO (RPM)      | Przerwanie sprzętowe INT1
+ D4           | Selektor Przekaźników - CH1     | Wyjście cyfrowe Break-Before-Make
+ D5           | Sygnalizacja Alarmu - Went. 1+2 | Zsumowane wyjście alarmowe (LED)
+ D6           | Moduł HW-154 - DIO              | Linia danych TM1638 (Podpięta do D6)
+ D7           | Selektor Przekaźników - CH2     | Wyjście cyfrowe Break-Before-Make
+ D8           | Czujniki Temp. DS18B20 (1-Wire) | Magistrala OneWire (F1 i F2)
+ D9           | Wentylator 1 - Sterowanie PWM   | Wyjście PWM (Timer 1)
+ D10          | Wentylator 2 - Sterowanie PWM   | Wyjście PWM (Timer 1)
+ D11          | Moduł HW-154 - STB (Strobe)     | Linia wyboru układu TM1638
+ D12          | Moduł HW-154 - CLK (Clock)      | Linia zegarowa TM1638
+ D13          | Odbiornik IR (DATA / OUT)       | Odbiornik IR (np. VS1838B)
+ A0           | Selektor Przekaźników - CH3     | Wyjście cyfrowe GPIO
+ A1           | Selektor Przekaźników - CH4     | Wyjście cyfrowe GPIO
+ A2           | Selektor Przekaźników - CH5     | Wyjście cyfrowe GPIO
+ A3           | Selektor Przekaźników - CH6     | Wyjście cyfrowe GPIO
+ A4           | Selektor Przekaźników - CH7     | Wyjście cyfrowe GPIO
+ A5           | Selektor Przekaźników - CH8     | Wyjście cyfrowe GPIO
+ A6 / A7      | WOLNE                           | Dostępne tylko jako wejścia ADC
+ -------------------------------------------------------------------------------------
+ AUTOMATYCZNY SKRYPT GIT (Uruchamiany w terminalu Linuxa w folderze projektu):
+ -------------------------------------------------------------------------------------
+ inotifywait -m -e close_write,modify,moved_to . | while read -r path action file; do
+     if [[ "$file" == *.ino ]]; then
+         git add .
+         if git commit -m "Auto-save: $file $(date '+%Y-%m-%d %H:%M:%S')"; then
+             git push
+             echo "✔ [GIT] Zapisano i wysłano (push) dla: $file"
+         fi
+     fi
+ done
  =====================================================================================
-
-Automat go gita
-Ma sobie latać w oknie termianala w katalogu skryptu
-
-inotifywait -m -e close_write,modify,moved_to . | while read -r path action file; do
-    if [[ "$file" == *.ino ]]; then
-        git add .
-        if git commit -m "Auto-save: $file $(date '+%Y-%m-%d %H:%M:%S')"; then
-            git push
-            echo "✔ [GIT] Zapisano i wysłano (push) dla: $file"
-        fi
-    fi
-done
 */
 
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <EEPROM.h>
 #include <TM1638plus.h>
+#include <IRremote.hpp>
 
-// Nazwy wejść wyświetlane na panelu (max 4 znaki, np. "CD  ", "DAC ", "TUBE")
+// ===================================================================================
+//             DEFINICJE KODÓW PILOTA IR (PODMIEŃ WARTOŚCI NA SWOJE)
+// ===================================================================================
+const uint32_t IR_CODE_CH1  = 0x0C; // Przycisk 1 (CD)
+const uint32_t IR_CODE_CH2  = 0x18; // Przycisk 2 (DAC)
+const uint32_t IR_CODE_CH3  = 0x5E; // Przycisk 3 (TUBE)
+const uint32_t IR_CODE_CH4  = 0x08; // Przycisk 4 (AUX1)
+const uint32_t IR_CODE_CH5  = 0x1C; // Przycisk 5 (AUX2)
+const uint32_t IR_CODE_CH6  = 0x5A; // Przycisk 6 (TAPE)
+const uint32_t IR_CODE_CH7  = 0x42; // Przycisk 7 (PHON)
+const uint32_t IR_CODE_CH8  = 0x52; // Przycisk 8 (TUNR)
+
+const uint32_t IR_CODE_NEXT = 0x09; // Przycisk CH+ / Strzałka w prawo
+const uint32_t IR_CODE_PREV = 0x15; // Przycisk CH- / Strzałka w lewo
+// ===================================================================================
+
+// Nazwy wejść wyświetlane na panelu (max 4 znaki)
 const char* channelNames[8] = {
     "CD  ",   // CH 1
     "DAC ",   // CH 2
@@ -36,15 +78,17 @@ const char* channelNames[8] = {
     "TUNR"    // CH 8
 };
 
-
 const int EEPROM_ADDR_CHANNEL = 0;
 
-// --- MODUŁ HW-154 (NOWA ROZPISKA) ---
+// --- MODUŁ HW-154 ---
 #define STROBE_TM 11
 #define CLOCK_TM  12
-#define DIO_TM    6   // Pin 6 (zamiast Pinu 13 z diodą L)
+#define DIO_TM    6   
 
 TM1638plus tm(STROBE_TM, CLOCK_TM, DIO_TM, false);
+
+// --- ODBIORNIK IR ---
+#define IR_RECEIVE_PIN 13
 
 // --- CZUJNIKI TEMPERATURY I CHŁODZENIE ---
 #define ONE_WIRE_BUS 8
@@ -60,7 +104,7 @@ const int PWM_MIN      = 45;
 
 const int pwmPins[2]   = {9, 10};  
 const int tachoPins[2] = {2, 3};   
-const int alarmPins[2] = {5, 13}; // Pin 13 jako fizyczny wyjście alarmowe LED
+const int COMMON_ALARM_PIN = 5;
 
 bool fanEnabled[2]   = {true, true};
 const int fanType[2] = {1, 1};      
@@ -114,10 +158,10 @@ void selectChannel(int channel) {
     // 2. Załączenie przekaźnika
     digitalWrite(selectorPins[currentChannel], HIGH);
 
-    // 3. EEPROM
+    // 3. Zapis do nieulotnej pamięci EEPROM
     EEPROM.update(EEPROM_ADDR_CHANNEL, currentChannel);
 
-    // 4. Diody LED na HW-154
+    // 4. Załączenie odpowiedniej diody LED na HW-154
     for (int i = 0; i < 8; i++) {
         tm.setLED(i, (i == currentChannel) ? 1 : 0);
     }
@@ -131,12 +175,42 @@ void selectChannel(int channel) {
     Serial.println("]");
 }
 
+// --- OBSŁUGA KOMEND PILOTA IR ---
+void handleIR() {
+    if (IrReceiver.decode()) {
+        // Ignorujemy powtórzenia przytrzymanego przycisku (Repeat Code)
+        if (!(IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT)) {
+            uint32_t irCommand = IrReceiver.decodedIRData.command;
+
+            if (irCommand != 0) {
+                Serial.print("[IR] Odebrano komendę HEX: 0x");
+                Serial.println(irCommand, HEX);
+
+                if (irCommand == IR_CODE_CH1)      selectChannel(0);
+                else if (irCommand == IR_CODE_CH2) selectChannel(1);
+                else if (irCommand == IR_CODE_CH3) selectChannel(2);
+                else if (irCommand == IR_CODE_CH4) selectChannel(3);
+                else if (irCommand == IR_CODE_CH5) selectChannel(4);
+                else if (irCommand == IR_CODE_CH6) selectChannel(5);
+                else if (irCommand == IR_CODE_CH7) selectChannel(6);
+                else if (irCommand == IR_CODE_CH8) selectChannel(7);
+                else if (irCommand == IR_CODE_NEXT) selectChannel(currentChannel + 1);
+                else if (irCommand == IR_CODE_PREV) selectChannel(currentChannel - 1);
+            }
+        }
+        IrReceiver.resume(); // Odblokowanie odbiornika na kolejny sygnał
+    }
+}
+
 void setup() {
     Serial.begin(9600);
     sensors.begin();
     sensors.setWaitForConversion(false);
 
-    // Inicjalizacja HW-154
+    // Inicjalizacja odbiornika IR
+    IrReceiver.begin(IR_RECEIVE_PIN, DISABLE_LED_FEEDBACK);
+
+    // Inicjalizacja wyświetlacza HW-154
     tm.displayBegin();
     tm.reset();
     tm.brightness(3); 
@@ -150,11 +224,12 @@ void setup() {
     }
     delay(400);
 
-    // Konfiguracja chłodzenia
+    // Konfiguracja wyjść PWM, TACHO oraz wspólnego Alarmu
+    pinMode(COMMON_ALARM_PIN, OUTPUT);
+    digitalWrite(COMMON_ALARM_PIN, LOW);
+
     for (int i = 0; i < 2; i++) {
         pinMode(pwmPins[i], OUTPUT);
-        pinMode(alarmPins[i], OUTPUT);
-        digitalWrite(alarmPins[i], LOW);
 
         if (fanType[i] == 1) {
             pinMode(tachoPins[i], INPUT_PULLUP);
@@ -170,18 +245,21 @@ void setup() {
         digitalWrite(selectorPins[i], LOW);
     }
 
-    // Odczyt zapamiętanego kanału
+    // Odczyt zapamiętanego kanału z EEPROM
     byte savedChannel = EEPROM.read(EEPROM_ADDR_CHANNEL);
     if (savedChannel > 7) savedChannel = 0;
     selectChannel(savedChannel);
 
     sensors.requestTemperatures();
-    Serial.println("Sterownik A-136 gotowy do pracy.");
+    Serial.println("Sterownik A-136 gotowy do pracy (z obsługą IR).");
     Serial.println("-------------------------------------------------------");
 }
 
 void loop() {
-    // 1. NATYCHMIASTOWA OBSŁUGA PRZYCISKÓW H-154
+    // 1. OBSŁUGA PILOTA IR (NATYCHMIASTOWA)
+    handleIR();
+
+    // 2. OBSŁUGA PRZYCISKÓW H-154 (S1-S8)
     uint8_t buttons = tm.readButtons();
 
     if (buttons != 0) {
@@ -195,11 +273,11 @@ void loop() {
 
         if (pressedBit != -1 && pressedBit != currentChannel) {
             selectChannel(pressedBit);
-            delay(200); // Filtrowanie drgań styków
+            delay(200); // Antydrabik
         }
     }
 
-    // 2. CHŁODZENIE, DIAGNOSTYKA SERIAL I EKRAN (Co 1000 ms)
+    // 3. CHŁODZENIE, DIAGNOSTYKA SERIAL I EKRAN (Co 1000 ms)
     unsigned long currentMillis = millis();
     static bool showSensor2 = false;
 
@@ -222,7 +300,7 @@ void loop() {
         tachoCount[1] = 0;
         interrupts();
 
-        // Przeliczenie sterowania i detekcja alarmów
+        // Przeliczenie sterowania i detekcja awarii
         for (int i = 0; i < 2; i++) {
             if (fanEnabled[i]) {
                 if (temps[i] < TEMP_START) {
@@ -233,15 +311,20 @@ void loop() {
                 }
                 analogWrite(pwmPins[i], pwmValues[i]);
 
-                // Weryfikacja awarii: Wysterowany PWM > 0, ale obroty RPM = 0
+                // Weryfikacja awarii
                 if (pwmValues[i] > 0 && rpm[i] == 0) {
-                    digitalWrite(alarmPins[i], HIGH);
                     fanAlarmState[i] = true;
                 } else {
-                    digitalWrite(alarmPins[i], LOW);
                     fanAlarmState[i] = false;
                 }
             }
+        }
+
+        // Aktywacja wspólnej linii alarmu D5, jeśli którykolwiek wentylator zgłasza błąd
+        if (fanAlarmState[0] || fanAlarmState[1]) {
+            digitalWrite(COMMON_ALARM_PIN, HIGH);
+        } else {
+            digitalWrite(COMMON_ALARM_PIN, LOW);
         }
 
         // --- PEŁNY RAPORT DIAGNOSTYCZNY W SERIAL MONITORZE ---

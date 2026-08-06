@@ -17,11 +17,6 @@ inotifywait -m -e close_write,modify,moved_to . | while read -r path action file
         fi
     fi
 done
-
-
-
-
-
 */
 
 #include <OneWire.h>

@@ -62,8 +62,8 @@ const uint32_t IR_CODE_CH6  = 0x5A; // Przycisk 6 (TAPE)
 const uint32_t IR_CODE_CH7  = 0x42; // Przycisk 7 (PHON)
 const uint32_t IR_CODE_CH8  = 0x52; // Przycisk 8 (TUNR)
 
-const uint32_t IR_CODE_NEXT = 0x09; // Przycisk opcjonalny (np. Ch+)
-const uint32_t IR_CODE_PREV = 0x15; // Przycisk opcjonalny (np. Ch-)
+const uint32_t IR_CODE_NEXT = 0x15; // Przycisk opcjonalny (np. Ch+)
+const uint32_t IR_CODE_PREV = 0x7; // Przycisk opcjonalny (np. Ch-)
 // ===================================================================================
 
 // Nazwy wejść wyświetlane na panelu (max 4 znaki)

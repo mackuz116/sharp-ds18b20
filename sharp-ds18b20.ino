@@ -96,7 +96,7 @@ TM1638plus tm(STROBE_TM, CLOCK_TM, DIO_TM, false);
 // --- STEROWANIE ZASILANIEM GŁÓWNYM ---
 #define POWER_RELAY_PIN 10 // Pin sterujący przekaźnikiem zasilania 230V
 bool powerState = false;   // false = Standby (OFF), true = Praca (ON)
-bool waitButtonsRelease = false; // Flaga blokująca natychmiastowe ponowne włączenie
+bool waitButtonsRelease = false; // Flaga zatrzaskowa (zapobiega pętli włączania/wyłączania)
 
 // --- CZUJNIK TEMPERATURY I CHŁODZENIE (1 WENTYLATOR) ---
 #define ONE_WIRE_BUS 8
@@ -212,7 +212,7 @@ void setPower(bool turnOn) {
         fanAlarmState = false;
 
         tm.reset();
-        waitButtonsRelease = true; // Wymagaj puszczenia przycisku przed ponownym włączeniem
+        waitButtonsRelease = true; // Wymagaj puszczenia przycisku po wyłączeniu
 
         Serial.println(">>> WZMACNIACZ WYŁĄCZONY [STANDBY]");
     }
@@ -258,7 +258,6 @@ void setup() {
     pinMode(POWER_RELAY_PIN, OUTPUT);
     digitalWrite(POWER_RELAY_PIN, LOW);
 
-    // Inicjalizacja HW-154 zaraz po włączeniu zasilania (dla sprawnego czytania przycisków w Standby)
     tm.displayBegin();
     tm.reset();
 
@@ -287,56 +286,53 @@ void loop() {
     // 1. OBSŁUGA PILOTA IR
     handleIR();
 
-    // 2. OBSŁUGA PRZYCISKÓW HW-154
+    // 2. PRECYZYJNA OBSŁUGA PRZYCISKÓW HW-154
     uint8_t buttons = tm.readButtons();
     static unsigned long s1PressStartTime = 0;
-    static bool s1Handled = false;
+    static bool s1LongPressTriggered = false;
 
-    // Resetuj flagę zatrzaskową, gdy wszystkie przyciski zostaną puszczone
+    // Gdy przycisk zostanie puszczony – resetujemy stan oczekiwania
     if (buttons == 0) {
         waitButtonsRelease = false;
+
+        // Jeśli S1 był wciśnięty, ale puszczono go przed progiem 1.2s -> KRÓTKIE KLIKNIĘCIE (Wybór CH1)
+        if (s1PressStartTime != 0 && !s1LongPressTriggered && powerState) {
+            selectChannel(0);
+        }
+
         s1PressStartTime = 0;
-        s1Handled = false;
+        s1LongPressTriggered = false;
     }
 
     if (!powerState) {
-        // Gdy WYŁĄCZONY – włączaj po wciśnięciu przycisku (gdy nie ma blokady zatrzaskowej)
+        // W STANIE STANDBY: dowolne naciśnięcie wybudza układ
         if (buttons != 0 && !waitButtonsRelease) {
             setPower(true);
-            waitButtonsRelease = true; // Zabezpieczenie przed powtórną reakcją
+            waitButtonsRelease = true;
         }
     } else {
-        // Gdy WŁĄCZONY
+        // W STANIE PRACY (POWER ON):
         if (buttons & 0x01) { // Przycisk S1 wciśnięty
-            if (s1PressStartTime == 0 && !s1Handled) {
+            if (s1PressStartTime == 0) {
                 s1PressStartTime = millis();
-            } else if (!s1Handled && (millis() - s1PressStartTime >= 1200)) {
-                // Po przytrzymaniu przez 1.2s -> Wyłączenie
-                s1Handled = true;
+            } else if (!s1LongPressTriggered && (millis() - s1PressStartTime >= 1200)) {
+                // Przytrzymano > 1.2 sekundy -> WYŁĄCZENIE (STANDBY)
+                s1LongPressTriggered = true;
                 setPower(false);
             }
-        } else {
-            // Puszczenie S1 przed upływem 1.2s -> Przełączenie na CH1
-            if (s1PressStartTime != 0 && !s1Handled) {
-                selectChannel(0);
+        } 
+        else if (buttons != 0) { // Przyciski S2..S8 (działają od razu)
+            int pressedBit = -1;
+            for (int i = 1; i < 8; i++) {
+                if (buttons & (1 << i)) {
+                    pressedBit = i;
+                    break;
+                }
             }
-            s1PressStartTime = 0;
-            s1Handled = false;
 
-            // Pozostałe przyciski S2..S8
-            if (buttons != 0 && !(buttons & 0x01)) {
-                int pressedBit = -1;
-                for (int i = 1; i < 8; i++) {
-                    if (buttons & (1 << i)) {
-                        pressedBit = i;
-                        break;
-                    }
-                }
-
-                if (pressedBit != -1 && pressedBit != currentChannel) {
-                    selectChannel(pressedBit);
-                    delay(200);
-                }
+            if (pressedBit != -1 && pressedBit != currentChannel) {
+                selectChannel(pressedBit);
+                delay(200); // Antydrabik
             }
         }
     }
